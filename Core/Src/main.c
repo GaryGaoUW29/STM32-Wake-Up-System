@@ -131,6 +131,7 @@ int main(void) {
 /* USER CODE BEGIN sendData */
 void sendData() {
 	HAL_GPIO_WritePin(GPIO_PORT, RCLK_Pin, GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(GPIO_PORT, DATA_Pin, GPIO_PIN_RESET);
 	for (int i = 0; i < NUM_74HC595_CHIPS; i++) {
 		for (int j = 0; j < 8; j++) {
 			HAL_GPIO_WritePin(GPIO_PORT, SRCLK_Pin, GPIO_PIN_RESET);
@@ -142,6 +143,8 @@ void sendData() {
 			} else {
 			    HAL_GPIO_WritePin(GPIO_PORT, DATA_Pin, GPIO_PIN_RESET);
 			}
+
+			HAL_GPIO_WritePin(GPIO_PORT, SRCLK_Pin, GPIO_PIN_SET);
 		}
 	}
 	HAL_GPIO_WritePin(GPIO_PORT, RCLK_Pin, GPIO_PIN_SET);
