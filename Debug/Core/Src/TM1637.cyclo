@@ -1,0 +1,15 @@
+../Core/Src/TM1637.c:114:13:InitGPIOClock	7
+../Core/Src/TM1637.c:160:13:DelayUSb	3
+../Core/Src/TM1637.c:179:13:DelayUSn	1
+../Core/Src/TM1637.c:188:13:ClockPin	1
+../Core/Src/TM1637.c:198:13:DataPin	1
+../Core/Src/TM1637.c:207:13:StartTransmision	1
+../Core/Src/TM1637.c:217:13:StopTransmision	1
+../Core/Src/TM1637.c:230:13:SkipAck	1
+../Core/Src/TM1637.c:241:13:WriteBit	1
+../Core/Src/TM1637.c:252:13:WriteByte	2
+../Core/Src/TM1637.c:258:6:TM1637Init	1
+../Core/Src/TM1637.c:280:6:TM1637SetBrightness	1
+../Core/Src/TM1637.c:287:6:TM1637DisplayText	4
+../Core/Src/TM1637.c:309:6:TM1637DisplayNumber	2
+../Core/Src/TM1637.c:319:6:TM1637Ticker	3
