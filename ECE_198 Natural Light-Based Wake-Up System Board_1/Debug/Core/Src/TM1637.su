@@ -1,0 +1,15 @@
+../Core/Src/TM1637.c:114:13:InitGPIOClock	40	static
+../Core/Src/TM1637.c:160:13:DelayUSb	24	static,ignoring_inline_asm
+../Core/Src/TM1637.c:179:13:DelayUSn	16	static
+../Core/Src/TM1637.c:188:13:ClockPin	16	static
+../Core/Src/TM1637.c:198:13:DataPin	16	static
+../Core/Src/TM1637.c:207:13:StartTransmision	8	static
+../Core/Src/TM1637.c:217:13:StopTransmision	8	static
+../Core/Src/TM1637.c:230:13:SkipAck	8	static
+../Core/Src/TM1637.c:241:13:WriteBit	16	static
+../Core/Src/TM1637.c:252:13:WriteByte	24	static
+../Core/Src/TM1637.c:258:6:TM1637Init	48	static
+../Core/Src/TM1637.c:280:6:TM1637SetBrightness	16	static
+../Core/Src/TM1637.c:287:6:TM1637DisplayText	24	static
+../Core/Src/TM1637.c:309:6:TM1637DisplayNumber	24	static
+../Core/Src/TM1637.c:319:6:TM1637Ticker	168	static
