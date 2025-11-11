@@ -2,17 +2,12 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : Main program body
-  ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2024 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
+  * @brief          : Main program body for STM32 Board 2 (Motor Control)
+  * @author         : Gary Gao (g44gao@uwaterloo.ca)
+  * @brief          : Refactored to be event-driven.
+  * : Waits for a UART signal from Board 1, then
+  * : gradually opens the blinds using PWM,
+  * : checking for a limit switch.
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -21,7 +16,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdbool.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -31,19 +26,21 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
-// Define constants for PWM signal parameters (adjust as needed)
+// Define constants for PWM signal parameters
 #define PWM_FREQUENCY 50       // 50 Hz for 20ms period
-#define PWM_MIN_DUTY_CYCLE 5   // 0 degrees position (1 ms pulse)
-#define PWM_MAX_DUTY_CYCLE 10  // 90 degrees position (2 ms pulse)
+#define PWM_MIN_DUTY_CYCLE 5   // 0% open (e.g., 1ms pulse)
+#define PWM_MAX_DUTY_CYCLE 10  // 100% open (e.g., 2ms pulse)
 
-// Placeholder for GPIO Pin, Timer and Channel (adjust these based on configuration)
-#define SERVO_PWM_TIM htim2         // Timer instance for PWM
-#define SERVO_PWM_CHANNEL TIM_CHANNEL_1  // Timer channel used for PWM
+// Timer and Channel
+#define SERVO_PWM_CHANNEL TIM_CHANNEL_1
 
-// Timer handle (this should be defined and configured in the main code or CubeMX)
-extern TIM_HandleTypeDef SERVO_PWM_TIM;
+// Magic Byte from Board 1
+#define WAKEUP_SIGNAL 0xAA
 
+// Limit Switch Pin
+// !! Modify these pins based on your hardware connection !!
+#define LIMIT_SWITCH_UPPER_Port GPIOA
+#define LIMIT_SWITCH_UPPER_Pin  GPIO_PIN_5 // Example: PA5
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -52,24 +49,23 @@ extern TIM_HandleTypeDef SERVO_PWM_TIM;
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+TIM_HandleTypeDef htim2; // Timer handle for PWM
 UART_HandleTypeDef huart2;
-float blind_length = 2; //meters
-float gear_diameter = 0.08; //meters
-
-//calculate necessary angle to open the blinds:
-
-float gear_circumference = 3.1415 * gear_diameter; //meters
-float rotations = blind_length / gear_circumference; //number of rotations necessary
-float rotations_angle = rotations * 360;
 
 /* USER CODE BEGIN PV */
-
+volatile bool g_wakeup_signal_received = false; // Flag set by UART interrupt
+uint8_t g_uart_rx_buffer[1];                   // 1-byte buffer for UART data
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_TIM2_Init(void); // Added TIM2 Init prototype
+void Servo_Init(void);
+void Servo_Control_Percentage(float percentage);
+void Gradual_Open_Blinds(void);
+bool Check_Limit_Switch_Upper(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -83,26 +79,8 @@ static void MX_USART2_UART_Init(void);
   * @brief  The application entry point.
   * @retval int
   */
-
-// Function to initialize the PWM signal
-void Servo_Init() {
-    // Start PWM for the servo motor
-    HAL_TIM_PWM_Start(&SERVO_PWM_TIM, SERVO_PWM_CHANNEL);
-}
-
-// Function to control the servo motor to a specific angle
-void Servo_Control(uint8_t angle) {
-
-    // Calculate duty cycle for the desired angle
-    float duty_cycle = PWM_MIN_DUTY_CYCLE + (angle / rotations_angle) * (PWM_MAX_DUTY_CYCLE - PWM_MIN_DUTY_CYCLE);
-
-    // Set the calculated duty cycle to the PWM channel
-    __HAL_TIM_SET_COMPARE(&SERVO_PWM_TIM, SERVO_PWM_CHANNEL, (uint16_t)((duty_cycle / 100) * __HAL_TIM_GET_AUTORELOAD(&SERVO_PWM_TIM)));
-}
-
 int main(void)
 {
-
   /* USER CODE BEGIN 1 */
 
   /* USER CODE END 1 */
@@ -126,8 +104,12 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART2_UART_Init();
+  MX_TIM2_Init(); // Initialize Timer 2 for PWM
   /* USER CODE BEGIN 2 */
+  Servo_Init(); // Start the PWM signal
 
+  // Start listening for 1 byte of data via UART interrupt
+  HAL_UART_Receive_IT(&huart2, g_uart_rx_buffer, 1);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -136,41 +118,105 @@ int main(void)
   {
     /* USER CODE END WHILE */
 
-	  //Constantly check if signal is received from Board 1
-
-
-	  //Call servo motor turning when signal is received
-	  for (uint8_t angle = 0; angle <= rotations_angle; angle++) {
-	      Servo_Control(angle);
-	      HAL_Delay(333); // Delay to achieve gradual opening (adjust for smoothness)
-	  }
-
     /* USER CODE BEGIN 3 */
+    if (g_wakeup_signal_received)
+    {
+      g_wakeup_signal_received = false; // Clear the flag
+      Gradual_Open_Blinds();          // Run the motor sequence
+    }
+
+    // The MCU will idle here, consuming minimal power,
+    // until the UART interrupt sets the flag.
+    HAL_Delay(10);
   }
   /* USER CODE END 3 */
 }
 
-// Timer Initialization (defined elsewhere or using CubeMX)
-void MX_TIM2_Init(void) {
-    // Configure Timer 2 for PWM output
-    TIM_OC_InitTypeDef sConfigOC = {0};
+/**
+ * @brief  UART Receive Complete Interrupt Callback
+ * @retval None
+ */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance == USART2)
+  {
+    // Check if we received the correct "Magic Byte"
+    if (g_uart_rx_buffer[0] == WAKEUP_SIGNAL)
+    {
+      g_wakeup_signal_received = true;
+    }
 
-    SERVO_PWM_TIM.Instance = TIM2;
-    SERVO_PWM_TIM.Init.Prescaler = 84 - 1;  // Adjust prescaler and period for 20 ms period
-    SERVO_PWM_TIM.Init.CounterMode = TIM_COUNTERMODE_UP;
-    SERVO_PWM_TIM.Init.Period = 20000 - 1;  // 20 ms period for 50 Hz PWM
-    SERVO_PWM_TIM.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-    SERVO_PWM_TIM.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+    // Re-arm the UART interrupt to listen for the next byte
+    HAL_UART_Receive_IT(&huart2, g_uart_rx_buffer, 1);
+  }
+}
 
-    HAL_TIM_PWM_Init(&SERVO_PWM_TIM);
+/**
+ * @brief  Gradually opens the blinds over a 10-minute period
+ * @retval None
+ */
+void Gradual_Open_Blinds(void)
+{
+  // Simulate a 10-minute (600,000 ms) sunrise
+  const int total_duration_ms = 10 * 60 * 1000;
+  const int steps = 100; // Open in 100 small steps (0% to 100%)
+  const int delay_per_step_ms = total_duration_ms / steps;
 
-    // PWM configuration for TIM2 Channel 1
-    sConfigOC.OCMode = TIM_OCMODE_PWM1;
-    sConfigOC.Pulse = 0;  // Initial pulse width
-    sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-    sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  for (int i = 0; i <= steps; i++)
+  {
+    // Safety Check: Stop if the upper limit switch is hit
+    if (Check_Limit_Switch_Upper())
+    {
+      break; // Exit the loop
+    }
 
-    HAL_TIM_PWM_ConfigChannel(&SERVO_PWM_TIM, &sConfigOC, SERVO_PWM_CHANNEL);
+    Servo_Control_Percentage((float)i); // i is the percentage (0 to 100)
+    HAL_Delay(delay_per_step_ms);
+  }
+
+  // Optional: Stop PWM or set to a holding position
+  // For now, we just hold the 100% position.
+}
+
+/**
+ * @brief  Function to initialize the PWM signal
+ * @retval None
+ */
+void Servo_Init()
+{
+  // Start PWM for the servo motor
+  HAL_TIM_PWM_Start(&htim2, SERVO_PWM_CHANNEL);
+}
+
+/**
+ * @brief  Function to control the servo motor to a specific percentage (0-100)
+ * @param  percentage: 0.0f to 100.0f
+ * @retval None
+ */
+void Servo_Control_Percentage(float percentage)
+{
+  if (percentage < 0.0f) percentage = 0.0f;
+  if (percentage > 100.0f) percentage = 100.0f;
+
+  // Map percentage (0-100) to duty cycle (e.g., 5-10)
+  float duty_cycle_percent = PWM_MIN_DUTY_CYCLE + (percentage / 100.0f) * (PWM_MAX_DUTY_CYCLE - PWM_MIN_DUTY_CYCLE);
+
+  // Calculate the raw compare value
+  uint32_t autoreload = __HAL_TIM_GET_AUTORELOAD(&htim2);
+  uint16_t compare_value = (uint16_t)((duty_cycle_percent / 100.0f) * (autoreload + 1));
+
+  __HAL_TIM_SET_COMPARE(&htim2, SERVO_PWM_CHANNEL, compare_value);
+}
+
+/**
+ * @brief  Checks the state of the upper limit switch
+ * @retval bool: true if the switch is pressed, false otherwise
+ */
+bool Check_Limit_Switch_Upper(void)
+{
+  // Assuming the switch pulls to GND when pressed (Active LOW)
+  // and is configured with an internal or external PULL_UP.
+  return HAL_GPIO_ReadPin(LIMIT_SWITCH_UPPER_Port, LIMIT_SWITCH_UPPER_Pin) == GPIO_PIN_RESET;
 }
 
 /**
@@ -220,6 +266,43 @@ void SystemClock_Config(void)
 }
 
 /**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 84 - 1;  // Assuming 84MHz clock, (84M / 84) = 1MHz timer clock
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 20000 - 1;  // 1MHz / 20000 = 50 Hz (20ms period)
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;  // Initial pulse width (0% duty cycle)
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, SERVO_PWM_CHANNEL) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+  HAL_TIM_MspPostInit(&htim2); // This will configure the PWM GPIO pin
+}
+
+/**
   * @brief USART2 Initialization Function
   * @param None
   * @retval None
@@ -228,18 +311,18 @@ static void MX_USART2_UART_Init(void)
 {
 
   /* USER CODE BEGIN USART2_Init 0 */
-
+  // Note: Board 1 (TX) uses 9600 Baud
   /* USER CODE END USART2_Init 0 */
 
   /* USER CODE BEGIN USART2_Init 1 */
 
   /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
-  huart2.Init.BaudRate = 115200;
+  huart2.Init.BaudRate = 9600; // Must match Board 1's Baud Rate (9600)
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
   huart2.Init.StopBits = UART_STOPBITS_1;
   huart2.Init.Parity = UART_PARITY_NONE;
-  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.Mode = UART_MODE_RX; // Board 2 only needs to receive
   huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
   huart2.Init.OverSampling = UART_OVERSAMPLING_16;
   if (HAL_UART_Init(&huart2) != HAL_OK)
@@ -268,7 +351,6 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
-  __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
@@ -279,28 +361,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PC0 PC1 PC2 PC3
-                           PC4 PC5 PC6 PC7
-                           PC8 PC9 PC10 PC11
-                           PC12 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_2|GPIO_PIN_3
-                          |GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_7
-                          |GPIO_PIN_8|GPIO_PIN_9|GPIO_PIN_10|GPIO_PIN_11
-                          |GPIO_PIN_12;
-  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PA0 PA1 PA4 PA6
-                           PA7 PA8 PA9 PA10
-                           PA11 PA12 PA15 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_4|GPIO_PIN_6
-                          |GPIO_PIN_7|GPIO_PIN_8|GPIO_PIN_9|GPIO_PIN_10
-                          |GPIO_PIN_11|GPIO_PIN_12|GPIO_PIN_15;
-  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
   /*Configure GPIO pin : LD2_Pin */
   GPIO_InitStruct.Pin = LD2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
@@ -308,30 +368,21 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PB0 PB1 PB2 PB10
-                           PB12 PB13 PB14 PB15
-                           PB4 PB5 PB6 PB7
-                           PB8 PB9 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_2|GPIO_PIN_10
-                          |GPIO_PIN_12|GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15
-                          |GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_7
-                          |GPIO_PIN_8|GPIO_PIN_9;
-  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+  /*Configure GPIO pin : LIMIT_SWITCH_UPPER_Pin */
+  // This configures the example pin PA5
+  GPIO_InitStruct.Pin = LIMIT_SWITCH_UPPER_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP; // Assuming switch pulls to GND
+  HAL_GPIO_Init(LIMIT_SWITCH_UPPER_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : PD2 */
-  GPIO_InitStruct.Pin = GPIO_PIN_2;
-  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
 /* USER CODE BEGIN MX_GPIO_Init_2 */
 /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
-
+// This file (stm32f4xx_hal_msp.c) should handle the TIM2 GPIO Init
+// We need to add the HAL_TIM_MspPostInit call in MX_TIM2_Init
 /* USER CODE END 4 */
 
 /**
@@ -352,7 +403,7 @@ void Error_Handler(void)
 #ifdef  USE_FULL_ASSERT
 /**
   * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
+  * where the assert_param error has occurred.
   * @param  file: pointer to the source file name
   * @param  line: assert_param error line source number
   * @retval None
